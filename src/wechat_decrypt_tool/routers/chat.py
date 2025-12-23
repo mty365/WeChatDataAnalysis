@@ -323,8 +323,11 @@ async def list_chat_messages(
                 emoji_url = ""
                 thumb_url = ""
                 image_url = ""
+                image_file_id = ""
                 video_md5 = ""
                 video_thumb_md5 = ""
+                video_file_id = ""
+                video_thumb_file_id = ""
                 video_url = ""
                 video_thumb_url = ""
                 voice_length = ""
@@ -337,6 +340,7 @@ async def list_chat_messages(
                 transfer_status = ""
                 file_md5 = ""
                 transfer_id = ""
+                voip_type = ""
 
                 if local_type == 10000:
                     render_type = "system"
@@ -396,14 +400,40 @@ async def list_chat_messages(
                     quote_content = str(parsed.get("quoteContent") or "")
                 elif local_type == 3:
                     render_type = "image"
-                    image_md5 = _extract_xml_attr(raw_text, "md5")
-                    # Extract CDN URL and validate it looks like a proper URL
-                    _cdn_url = (
+                    # 先尝试从 XML 中提取 md5（不同版本字段可能不同）
+                    image_md5 = _extract_xml_attr(raw_text, "md5") or _extract_xml_tag_text(raw_text, "md5")
+                    if not image_md5:
+                        for k in [
+                            "cdnthumbmd5",
+                            "cdnthumd5",
+                            "cdnmidimgmd5",
+                            "cdnbigimgmd5",
+                            "hdmd5",
+                            "hevc_mid_md5",
+                            "hevc_md5",
+                            "imgmd5",
+                            "filemd5",
+                        ]:
+                            image_md5 = _extract_xml_attr(raw_text, k) or _extract_xml_tag_text(raw_text, k)
+                            if image_md5:
+                                break
+
+                    # Extract CDN URL (some versions store a non-HTTP "file id" string here)
+                    _cdn_url_or_id = (
                         _extract_xml_attr(raw_text, "cdnthumburl")
+                        or _extract_xml_attr(raw_text, "cdnthumurl")
                         or _extract_xml_attr(raw_text, "cdnmidimgurl")
                         or _extract_xml_attr(raw_text, "cdnbigimgurl")
+                        or _extract_xml_tag_text(raw_text, "cdnthumburl")
+                        or _extract_xml_tag_text(raw_text, "cdnthumurl")
+                        or _extract_xml_tag_text(raw_text, "cdnmidimgurl")
+                        or _extract_xml_tag_text(raw_text, "cdnbigimgurl")
                     )
-                    image_url = _cdn_url if _cdn_url.startswith(("http://", "https://")) else ""
+                    _cdn_url_or_id = str(_cdn_url_or_id or "").strip()
+                    image_url = _cdn_url_or_id if _cdn_url_or_id.startswith(("http://", "https://")) else ""
+                    if (not image_url) and _cdn_url_or_id:
+                        image_file_id = _cdn_url_or_id
+
                     if (not image_md5) and resource_conn is not None:
                         image_md5 = _lookup_resource_md5(
                             resource_conn,
@@ -423,8 +453,25 @@ async def list_chat_messages(
                     render_type = "video"
                     video_md5 = _extract_xml_attr(raw_text, "md5")
                     video_thumb_md5 = _extract_xml_attr(raw_text, "cdnthumbmd5")
-                    video_thumb_url = _extract_xml_attr(raw_text, "cdnthumburl")
-                    video_url = _extract_xml_attr(raw_text, "cdnvideourl")
+                    video_thumb_url_or_id = _extract_xml_attr(raw_text, "cdnthumburl") or _extract_xml_tag_text(
+                        raw_text, "cdnthumburl"
+                    )
+                    video_url_or_id = _extract_xml_attr(raw_text, "cdnvideourl") or _extract_xml_tag_text(
+                        raw_text, "cdnvideourl"
+                    )
+
+                    video_thumb_url = (
+                        video_thumb_url_or_id
+                        if str(video_thumb_url_or_id or "").strip().lower().startswith(("http://", "https://"))
+                        else ""
+                    )
+                    video_url = (
+                        video_url_or_id
+                        if str(video_url_or_id or "").strip().lower().startswith(("http://", "https://"))
+                        else ""
+                    )
+                    video_thumb_file_id = "" if video_thumb_url else (str(video_thumb_url_or_id or "").strip() or "")
+                    video_file_id = "" if video_url else (str(video_url_or_id or "").strip() or "")
                     if (not video_thumb_md5) and resource_conn is not None:
                         video_thumb_md5 = _lookup_resource_md5(
                             resource_conn,
@@ -453,6 +500,29 @@ async def list_chat_messages(
                             create_time=create_time,
                         )
                     content_text = "[表情]"
+                elif local_type == 50:
+                    render_type = "voip"
+                    try:
+                        import re
+
+                        block = raw_text
+                        m_voip = re.search(
+                            r"(<VoIPBubbleMsg[^>]*>.*?</VoIPBubbleMsg>)",
+                            raw_text,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        )
+                        if m_voip:
+                            block = m_voip.group(1) or raw_text
+                        room_type = str(_extract_xml_tag_text(block, "room_type") or "").strip()
+                        if room_type == "0":
+                            voip_type = "video"
+                        elif room_type == "1":
+                            voip_type = "audio"
+
+                        voip_msg = str(_extract_xml_tag_text(block, "msg") or "").strip()
+                        content_text = voip_msg or "通话"
+                    except Exception:
+                        content_text = "通话"
                 elif local_type != 1:
                     if not content_text:
                         content_text = _infer_message_brief_by_local_type(local_type)
@@ -513,15 +583,19 @@ async def list_chat_messages(
                         "title": title,
                         "url": url,
                         "imageMd5": image_md5,
+                        "imageFileId": image_file_id,
                         "emojiMd5": emoji_md5,
                         "emojiUrl": emoji_url,
                         "thumbUrl": thumb_url,
                         "imageUrl": image_url,
                         "videoMd5": video_md5,
                         "videoThumbMd5": video_thumb_md5,
+                        "videoFileId": video_file_id,
+                        "videoThumbFileId": video_thumb_file_id,
                         "videoUrl": video_url,
                         "videoThumbUrl": video_thumb_url,
                         "voiceLength": voice_length,
+                        "voipType": voip_type,
                         "quoteTitle": quote_title,
                         "quoteContent": quote_content,
                         "amount": amount,
@@ -632,12 +706,19 @@ async def list_chat_messages(
         try:
             rt = str(m.get("renderType") or "")
             if rt == "image":
-                if (not str(m.get("imageUrl") or "")) and str(m.get("imageMd5") or ""):
-                    md5 = str(m.get("imageMd5") or "")
-                    m["imageUrl"] = (
-                        base_url
-                        + f"/api/chat/media/image?account={quote(account_dir.name)}&md5={quote(md5)}&username={quote(username)}"
-                    )
+                if not str(m.get("imageUrl") or ""):
+                    md5 = str(m.get("imageMd5") or "").strip()
+                    file_id = str(m.get("imageFileId") or "").strip()
+                    if md5:
+                        m["imageUrl"] = (
+                            base_url
+                            + f"/api/chat/media/image?account={quote(account_dir.name)}&md5={quote(md5)}&username={quote(username)}"
+                        )
+                    elif file_id:
+                        m["imageUrl"] = (
+                            base_url
+                            + f"/api/chat/media/image?account={quote(account_dir.name)}&file_id={quote(file_id)}&username={quote(username)}"
+                        )
             elif rt == "emoji":
                 md5 = str(m.get("emojiMd5") or "")
                 if md5:
@@ -667,18 +748,37 @@ async def list_chat_messages(
                             + f"/api/chat/media/emoji?account={quote(account_dir.name)}&md5={quote(md5)}&username={quote(username)}"
                         )
             elif rt == "video":
-                if (not str(m.get("videoThumbUrl") or "")) and str(m.get("videoThumbMd5") or ""):
-                    md5 = str(m.get("videoThumbMd5") or "")
-                    m["videoThumbUrl"] = (
-                        base_url
-                        + f"/api/chat/media/video_thumb?account={quote(account_dir.name)}&md5={quote(md5)}&username={quote(username)}"
-                    )
-                if (not str(m.get("videoUrl") or "")) and str(m.get("videoMd5") or ""):
-                    md5 = str(m.get("videoMd5") or "")
-                    m["videoUrl"] = (
-                        base_url
-                        + f"/api/chat/media/video?account={quote(account_dir.name)}&md5={quote(md5)}&username={quote(username)}"
-                    )
+                video_thumb_url = str(m.get("videoThumbUrl") or "").strip()
+                video_thumb_md5 = str(m.get("videoThumbMd5") or "").strip()
+                video_thumb_file_id = str(m.get("videoThumbFileId") or "").strip()
+                if (not video_thumb_url) or (
+                    not video_thumb_url.lower().startswith(("http://", "https://"))
+                ):
+                    if video_thumb_md5:
+                        m["videoThumbUrl"] = (
+                            base_url
+                            + f"/api/chat/media/video_thumb?account={quote(account_dir.name)}&md5={quote(video_thumb_md5)}&username={quote(username)}"
+                        )
+                    elif video_thumb_file_id:
+                        m["videoThumbUrl"] = (
+                            base_url
+                            + f"/api/chat/media/video_thumb?account={quote(account_dir.name)}&file_id={quote(video_thumb_file_id)}&username={quote(username)}"
+                        )
+
+                video_url = str(m.get("videoUrl") or "").strip()
+                video_md5 = str(m.get("videoMd5") or "").strip()
+                video_file_id = str(m.get("videoFileId") or "").strip()
+                if (not video_url) or (not video_url.lower().startswith(("http://", "https://"))):
+                    if video_md5:
+                        m["videoUrl"] = (
+                            base_url
+                            + f"/api/chat/media/video?account={quote(account_dir.name)}&md5={quote(video_md5)}&username={quote(username)}"
+                        )
+                    elif video_file_id:
+                        m["videoUrl"] = (
+                            base_url
+                            + f"/api/chat/media/video?account={quote(account_dir.name)}&file_id={quote(video_file_id)}&username={quote(username)}"
+                        )
             elif rt == "voice":
                 if str(m.get("serverId") or ""):
                     sid = int(m.get("serverId") or 0)

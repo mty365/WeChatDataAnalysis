@@ -591,14 +591,14 @@ const openMediaContextMenu = (e, message, kind) => {
   } else if (kind === 'file') {
     disabled = !message?.fileMd5
   } else if (kind === 'image') {
-    disabled = !message?.imageMd5
+    disabled = !(message?.imageMd5 || message?.imageFileId)
   } else if (kind === 'emoji') {
     disabled = !message?.emojiMd5
   } else if (kind === 'video') {
-    if (message?.videoMd5) {
+    if (message?.videoMd5 || message?.videoFileId) {
       disabled = false
       actualKind = 'video'
-    } else if (message?.videoThumbMd5) {
+    } else if (message?.videoThumbMd5 || message?.videoThumbFileId) {
       disabled = false
       actualKind = 'video_thumb'
     } else {
@@ -637,13 +637,16 @@ const onOpenFolderClick = async () => {
     } else if (kind === 'file') {
       params.md5 = m.fileMd5
     } else if (kind === 'image') {
-      params.md5 = m.imageMd5
+      if (m.imageMd5) params.md5 = m.imageMd5
+      else if (m.imageFileId) params.file_id = m.imageFileId
     } else if (kind === 'emoji') {
       params.md5 = m.emojiMd5
     } else if (kind === 'video') {
       params.md5 = m.videoMd5
+      if (m.videoFileId) params.file_id = m.videoFileId
     } else if (kind === 'video_thumb') {
       params.md5 = m.videoThumbMd5
+      if (m.videoThumbFileId) params.file_id = m.videoThumbFileId
     }
 
     await api.openChatMediaFolder(params)
@@ -1054,11 +1057,47 @@ const normalizeMessage = (msg) => {
   const fallbackAvatar = (!isSent && !selectedContact.value?.isGroup) ? (selectedContact.value?.avatar || null) : null
 
   const mediaBase = process.client ? 'http://localhost:8000' : ''
+  const normalizeMaybeUrl = (u) => (typeof u === 'string' ? u.trim() : '')
+  const isUsableMediaUrl = (u) => {
+    const v = normalizeMaybeUrl(u)
+    if (!v) return false
+    return (
+      /^https?:\/\//i.test(v)
+      || /^blob:/i.test(v)
+      || /^data:/i.test(v)
+      || /^\/api\/chat\/media\//i.test(v)
+    )
+  }
+
   const localEmojiUrl = msg.emojiMd5 ? `${mediaBase}/api/chat/media/emoji?account=${encodeURIComponent(selectedAccount.value || '')}&md5=${encodeURIComponent(msg.emojiMd5)}&username=${encodeURIComponent(selectedContact.value?.username || '')}` : ''
-  const normalizedImageUrl = msg.imageUrl || (msg.imageMd5 ? `${mediaBase}/api/chat/media/image?account=${encodeURIComponent(selectedAccount.value || '')}&md5=${encodeURIComponent(msg.imageMd5)}&username=${encodeURIComponent(selectedContact.value?.username || '')}` : '')
+  const localImageByMd5 = msg.imageMd5 ? `${mediaBase}/api/chat/media/image?account=${encodeURIComponent(selectedAccount.value || '')}&md5=${encodeURIComponent(msg.imageMd5)}&username=${encodeURIComponent(selectedContact.value?.username || '')}` : ''
+  const localImageByFileId = msg.imageFileId ? `${mediaBase}/api/chat/media/image?account=${encodeURIComponent(selectedAccount.value || '')}&file_id=${encodeURIComponent(msg.imageFileId)}&username=${encodeURIComponent(selectedContact.value?.username || '')}` : ''
+  const normalizedImageUrl = msg.imageUrl || localImageByMd5 || localImageByFileId || ''
   const normalizedEmojiUrl = msg.emojiUrl || localEmojiUrl
-  const normalizedVideoThumbUrl = msg.videoThumbUrl || (msg.videoThumbMd5 ? `${mediaBase}/api/chat/media/video_thumb?account=${encodeURIComponent(selectedAccount.value || '')}&md5=${encodeURIComponent(msg.videoThumbMd5)}&username=${encodeURIComponent(selectedContact.value?.username || '')}` : '')
-  const normalizedVideoUrl = msg.videoUrl || (msg.videoMd5 ? `${mediaBase}/api/chat/media/video?account=${encodeURIComponent(selectedAccount.value || '')}&md5=${encodeURIComponent(msg.videoMd5)}&username=${encodeURIComponent(selectedContact.value?.username || '')}` : '')
+  const localVideoThumbUrl = (() => {
+    if (!msg.videoThumbMd5 && !msg.videoThumbFileId) return ''
+    const parts = [
+      `account=${encodeURIComponent(selectedAccount.value || '')}`,
+      msg.videoThumbMd5 ? `md5=${encodeURIComponent(msg.videoThumbMd5)}` : '',
+      msg.videoThumbFileId ? `file_id=${encodeURIComponent(msg.videoThumbFileId)}` : '',
+      `username=${encodeURIComponent(selectedContact.value?.username || '')}`,
+    ].filter(Boolean)
+    return `${mediaBase}/api/chat/media/video_thumb?${parts.join('&')}`
+  })()
+
+  const localVideoUrl = (() => {
+    if (!msg.videoMd5 && !msg.videoFileId) return ''
+    const parts = [
+      `account=${encodeURIComponent(selectedAccount.value || '')}`,
+      msg.videoMd5 ? `md5=${encodeURIComponent(msg.videoMd5)}` : '',
+      msg.videoFileId ? `file_id=${encodeURIComponent(msg.videoFileId)}` : '',
+      `username=${encodeURIComponent(selectedContact.value?.username || '')}`,
+    ].filter(Boolean)
+    return `${mediaBase}/api/chat/media/video?${parts.join('&')}`
+  })()
+
+  const normalizedVideoThumbUrl = (isUsableMediaUrl(msg.videoThumbUrl) ? normalizeMaybeUrl(msg.videoThumbUrl) : '') || localVideoThumbUrl
+  const normalizedVideoUrl = (isUsableMediaUrl(msg.videoUrl) ? normalizeMaybeUrl(msg.videoUrl) : '') || localVideoUrl
   const normalizedVoiceUrl = msg.voiceUrl || (msg.serverId ? `${mediaBase}/api/chat/media/voice?account=${encodeURIComponent(selectedAccount.value || '')}&server_id=${encodeURIComponent(String(msg.serverId))}` : '')
 
   const remoteFromServer = (
@@ -1110,9 +1149,11 @@ const normalizeMessage = (msg) => {
     isSent,
     type: 'text',
     renderType: msg.renderType || 'text',
+    voipType: msg.voipType || '',
     title: msg.title || '',
     url: msg.url || '',
     imageMd5: msg.imageMd5 || '',
+    imageFileId: msg.imageFileId || '',
     emojiMd5: msg.emojiMd5 || '',
     emojiUrl: normalizedEmojiUrl || '',
     emojiLocalUrl: localEmojiUrl || '',
@@ -1122,6 +1163,8 @@ const normalizeMessage = (msg) => {
     imageUrl: normalizedImageUrl || '',
     videoMd5: msg.videoMd5 || '',
     videoThumbMd5: msg.videoThumbMd5 || '',
+    videoFileId: msg.videoFileId || '',
+    videoThumbFileId: msg.videoThumbFileId || '',
     videoThumbUrl: normalizedVideoThumbUrl || '',
     videoUrl: normalizedVideoUrl || '',
     quoteTitle: msg.quoteTitle || '',

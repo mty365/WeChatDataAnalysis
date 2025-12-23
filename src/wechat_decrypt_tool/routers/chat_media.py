@@ -19,6 +19,7 @@ from ..media_helpers import (
     _detect_image_extension,
     _detect_image_media_type,
     _ensure_decrypted_resource_for_md5,
+    _fallback_search_media_by_file_id,
     _fallback_search_media_by_md5,
     _get_decrypted_resource_path,
     _get_resource_dir,
@@ -238,29 +239,32 @@ async def download_chat_emoji(req: EmojiDownloadRequest):
 
 
 @router.get("/api/chat/media/image", summary="获取图片消息资源")
-async def get_chat_image(md5: str, account: Optional[str] = None, username: Optional[str] = None):
-    if not md5:
-        raise HTTPException(status_code=400, detail="Missing md5.")
+async def get_chat_image(
+    md5: Optional[str] = None,
+    file_id: Optional[str] = None,
+    account: Optional[str] = None,
+    username: Optional[str] = None,
+):
+    if (not md5) and (not file_id):
+        raise HTTPException(status_code=400, detail="Missing md5/file_id.")
     account_dir = _resolve_account_dir(account)
 
-    # 优先从解密资源目录读取（更快）
-    decrypted_path = _try_find_decrypted_resource(account_dir, md5.lower())
-    if decrypted_path:
-        data = decrypted_path.read_bytes()
-        media_type = _detect_image_media_type(data[:32])
-        if media_type == "application/octet-stream":
-            guessed = mimetypes.guess_type(str(decrypted_path))[0]
-            if guessed:
-                media_type = guessed
-        return Response(content=data, media_type=media_type)
+    # md5 模式：优先从解密资源目录读取（更快）
+    if md5:
+        decrypted_path = _try_find_decrypted_resource(account_dir, str(md5).lower())
+        if decrypted_path:
+            data = decrypted_path.read_bytes()
+            media_type = _detect_image_media_type(data[:32])
+            if media_type == "application/octet-stream":
+                guessed = mimetypes.guess_type(str(decrypted_path))[0]
+                if guessed:
+                    media_type = guessed
+            return Response(content=data, media_type=media_type)
 
-    # 回退到原始逻辑：从微信数据目录实时解密
+    # 回退：从微信数据目录实时定位并解密
     wxid_dir = _resolve_account_wxid_dir(account_dir)
     hardlink_db_path = account_dir / "hardlink.db"
-    extra_roots: list[Path] = []
     db_storage_dir = _resolve_account_db_storage_dir(account_dir)
-    if db_storage_dir:
-        extra_roots.append(db_storage_dir)
 
     roots: list[Path] = []
     if wxid_dir:
@@ -271,30 +275,47 @@ async def get_chat_image(md5: str, account: Optional[str] = None, username: Opti
         roots.append(wxid_dir / "cache")
     if db_storage_dir:
         roots.append(db_storage_dir)
+
     if not roots:
         raise HTTPException(
             status_code=404,
             detail="wxid_dir/db_storage_path not found. Please decrypt with db_storage_path to enable media lookup.",
         )
-    p = _resolve_media_path_from_hardlink(
-        hardlink_db_path,
-        roots[0],
-        md5=str(md5),
-        kind="image",
-        username=username,
-        extra_roots=roots[1:],
-    )
-    if (not p) and wxid_dir:
-        hit = _fallback_search_media_by_md5(str(wxid_dir), str(md5))
-        if hit:
-            p = Path(hit)
+
+    p: Optional[Path] = None
+
+    if md5:
+        p = _resolve_media_path_from_hardlink(
+            hardlink_db_path,
+            roots[0],
+            md5=str(md5),
+            kind="image",
+            username=username,
+            extra_roots=roots[1:],
+        )
+        if (not p) and wxid_dir:
+            hit = _fallback_search_media_by_md5(str(wxid_dir), str(md5), kind="image")
+            if hit:
+                p = Path(hit)
+    elif file_id:
+        # 一些版本图片消息无 MD5，仅提供 cdnthumburl 等“文件标识”
+        for r in [wxid_dir, db_storage_dir]:
+            if not r:
+                continue
+            hit = _fallback_search_media_by_file_id(str(r), str(file_id), kind="image", username=str(username or ""))
+            if hit:
+                p = Path(hit)
+                break
+
     if not p:
         raise HTTPException(status_code=404, detail="Image not found.")
 
-    logger.info(f"chat_image: md5={md5} resolved_source={p}")
+    logger.info(f"chat_image: md5={md5} file_id={file_id} resolved_source={p}")
 
     data, media_type = _read_and_maybe_decrypt_media(p, account_dir=account_dir, weixin_root=wxid_dir)
-    if media_type.startswith("image/"):
+
+    # 仅在 md5 有效时缓存到 resource 目录；file_id 可能非常长，避免写入超长文件名
+    if md5 and media_type.startswith("image/"):
         try:
             out_md5 = str(md5).lower()
             ext = _detect_image_extension(data)
@@ -304,7 +325,8 @@ async def get_chat_image(md5: str, account: Optional[str] = None, username: Opti
                 out_path.write_bytes(data)
         except Exception:
             pass
-    logger.info(f"chat_image: md5={md5} media_type={media_type} bytes={len(data)}")
+
+    logger.info(f"chat_image: md5={md5} file_id={file_id} media_type={media_type} bytes={len(data)}")
     return Response(content=data, media_type=media_type)
 
 
@@ -345,17 +367,23 @@ async def get_chat_emoji(md5: str, account: Optional[str] = None, username: Opti
 
 
 @router.get("/api/chat/media/video_thumb", summary="获取视频缩略图资源")
-async def get_chat_video_thumb(md5: str, account: Optional[str] = None, username: Optional[str] = None):
-    if not md5:
-        raise HTTPException(status_code=400, detail="Missing md5.")
+async def get_chat_video_thumb(
+    md5: Optional[str] = None,
+    file_id: Optional[str] = None,
+    account: Optional[str] = None,
+    username: Optional[str] = None,
+):
+    if (not md5) and (not file_id):
+        raise HTTPException(status_code=400, detail="Missing md5/file_id.")
     account_dir = _resolve_account_dir(account)
 
     # 优先从解密资源目录读取（更快）
-    decrypted_path = _try_find_decrypted_resource(account_dir, md5.lower())
-    if decrypted_path:
-        data = decrypted_path.read_bytes()
-        media_type = _detect_image_media_type(data[:32])
-        return Response(content=data, media_type=media_type)
+    if md5:
+        decrypted_path = _try_find_decrypted_resource(account_dir, str(md5).lower())
+        if decrypted_path:
+            data = decrypted_path.read_bytes()
+            media_type = _detect_image_media_type(data[:32])
+            return Response(content=data, media_type=media_type)
 
     # 回退到原始逻辑
     wxid_dir = _resolve_account_wxid_dir(account_dir)
@@ -375,18 +403,28 @@ async def get_chat_video_thumb(md5: str, account: Optional[str] = None, username
             status_code=404,
             detail="wxid_dir/db_storage_path not found. Please decrypt with db_storage_path to enable media lookup.",
         )
-    p = _resolve_media_path_from_hardlink(
-        hardlink_db_path,
-        roots[0],
-        md5=str(md5),
-        kind="video_thumb",
-        username=username,
-        extra_roots=roots[1:],
-    )
-    if (not p) and wxid_dir:
-        hit = _fallback_search_media_by_md5(str(wxid_dir), str(md5))
-        if hit:
-            p = Path(hit)
+    p: Optional[Path] = None
+    if md5:
+        p = _resolve_media_path_from_hardlink(
+            hardlink_db_path,
+            roots[0],
+            md5=str(md5),
+            kind="video_thumb",
+            username=username,
+            extra_roots=roots[1:],
+        )
+        if (not p) and wxid_dir:
+            hit = _fallback_search_media_by_md5(str(wxid_dir), str(md5), kind="video_thumb")
+            if hit:
+                p = Path(hit)
+    if (not p) and file_id:
+        for r in [wxid_dir, db_storage_dir]:
+            if not r:
+                continue
+            hit = _fallback_search_media_by_file_id(str(r), str(file_id), kind="video_thumb", username=str(username or ""))
+            if hit:
+                p = Path(hit)
+                break
     if not p:
         raise HTTPException(status_code=404, detail="Video thumbnail not found.")
 
@@ -395,10 +433,24 @@ async def get_chat_video_thumb(md5: str, account: Optional[str] = None, username
 
 
 @router.get("/api/chat/media/video", summary="获取视频资源")
-async def get_chat_video(md5: str, account: Optional[str] = None, username: Optional[str] = None):
-    if not md5:
-        raise HTTPException(status_code=400, detail="Missing md5.")
+async def get_chat_video(
+    md5: Optional[str] = None,
+    file_id: Optional[str] = None,
+    account: Optional[str] = None,
+    username: Optional[str] = None,
+):
+    if (not md5) and (not file_id):
+        raise HTTPException(status_code=400, detail="Missing md5/file_id.")
     account_dir = _resolve_account_dir(account)
+    md5_norm = str(md5 or "").strip().lower() if md5 else ""
+
+    if md5_norm:
+        # 优先从解密资源目录读取（更快，且支持 Range）
+        decrypted_path = _try_find_decrypted_resource(account_dir, md5_norm)
+        if decrypted_path:
+            mt = _guess_media_type_by_path(decrypted_path, fallback="video/mp4")
+            return FileResponse(str(decrypted_path), media_type=mt)
+
     wxid_dir = _resolve_account_wxid_dir(account_dir)
     hardlink_db_path = account_dir / "hardlink.db"
     extra_roots: list[Path] = []
@@ -416,22 +468,61 @@ async def get_chat_video(md5: str, account: Optional[str] = None, username: Opti
             status_code=404,
             detail="wxid_dir/db_storage_path not found. Please decrypt with db_storage_path to enable media lookup.",
         )
-    p = _resolve_media_path_from_hardlink(
-        hardlink_db_path,
-        roots[0],
-        md5=str(md5),
-        kind="video",
-        username=username,
-        extra_roots=roots[1:],
-    )
-    if (not p) and wxid_dir:
-        hit = _fallback_search_media_by_md5(str(wxid_dir), str(md5))
-        if hit:
-            p = Path(hit)
+    p: Optional[Path] = None
+    if md5_norm:
+        p = _resolve_media_path_from_hardlink(
+            hardlink_db_path,
+            roots[0],
+            md5=md5_norm,
+            kind="video",
+            username=username,
+            extra_roots=roots[1:],
+        )
+        if (not p) and wxid_dir:
+            hit = _fallback_search_media_by_md5(str(wxid_dir), md5_norm, kind="video")
+            if hit:
+                p = Path(hit)
+    if (not p) and file_id:
+        for r in [wxid_dir, db_storage_dir]:
+            if not r:
+                continue
+            hit = _fallback_search_media_by_file_id(str(r), str(file_id), kind="video", username=str(username or ""))
+            if hit:
+                p = Path(hit)
+                break
     if not p:
         raise HTTPException(status_code=404, detail="Video not found.")
-    media_type = _guess_media_type_by_path(p, fallback="video/mp4")
-    return FileResponse(str(p), media_type=media_type)
+
+    # 直接可播放的 MP4：直接 FileResponse（支持 Range）
+    try:
+        with open(p, "rb") as f:
+            head = f.read(8)
+        if len(head) >= 8 and head[4:8] == b"ftyp":
+            media_type = _guess_media_type_by_path(p, fallback="video/mp4")
+            return FileResponse(str(p), media_type=media_type)
+    except Exception:
+        pass
+
+    # 尝试解密/去前缀并落盘（避免一次性返回大文件 bytes）
+    if md5_norm:
+        try:
+            materialized = _ensure_decrypted_resource_for_md5(
+                account_dir,
+                md5=md5_norm,
+                source_path=p,
+                weixin_root=wxid_dir,
+            )
+        except Exception:
+            materialized = None
+        if materialized:
+            media_type = _guess_media_type_by_path(materialized, fallback="video/mp4")
+            return FileResponse(str(materialized), media_type=media_type)
+
+    # 最后兜底：直接返回处理后的 bytes（不支持 Range）
+    data, media_type = _read_and_maybe_decrypt_media(p, account_dir=account_dir, weixin_root=wxid_dir)
+    if media_type == "application/octet-stream":
+        media_type = _guess_media_type_by_path(p, fallback="video/mp4")
+    return Response(content=data, media_type=media_type)
 
 
 @router.get("/api/chat/media/voice", summary="获取语音消息资源")
@@ -482,6 +573,7 @@ async def get_chat_voice(server_id: int, account: Optional[str] = None):
 async def open_chat_media_folder(
     kind: str,
     md5: Optional[str] = None,
+    file_id: Optional[str] = None,
     server_id: Optional[int] = None,
     account: Optional[str] = None,
     username: Optional[str] = None,
@@ -528,15 +620,36 @@ async def open_chat_media_folder(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to export voice: {e}")
     else:
-        if not md5:
-            raise HTTPException(status_code=400, detail="Missing md5.")
-        p = _resolve_media_path_for_kind(account_dir, kind=kind_key, md5=str(md5), username=username)
+        if not md5 and not file_id:
+            raise HTTPException(status_code=400, detail="Missing md5/file_id.")
+
+        if md5 and (not file_id) and (not _is_valid_md5(str(md5))):
+            file_id = str(md5)
+            md5 = None
+
+        if md5:
+            p = _resolve_media_path_for_kind(account_dir, kind=kind_key, md5=str(md5), username=username)
+        if (not p) and file_id:
+            wxid_dir = _resolve_account_wxid_dir(account_dir)
+            db_storage_dir = _resolve_account_db_storage_dir(account_dir)
+            for r in [wxid_dir, db_storage_dir]:
+                if not r:
+                    continue
+                hit = _fallback_search_media_by_file_id(
+                    str(r),
+                    str(file_id),
+                    kind=str(kind_key),
+                    username=str(username or ""),
+                )
+                if hit:
+                    p = Path(hit)
+                    break
 
         resolved_before_materialize = p
         materialized_ok = False
         opened_kind = "resolved"
 
-        if p and kind_key in {"image", "emoji", "video_thumb"}:
+        if p and kind_key in {"image", "emoji", "video_thumb"} and md5:
             wxid_dir = _resolve_account_wxid_dir(account_dir)
             source_path = p
             if kind_key == "emoji":
@@ -693,7 +806,7 @@ async def open_chat_media_folder(
     except Exception:
         target = str(p)
 
-    logger.info(f"open_folder: kind={kind_key} md5={md5} server_id={server_id} -> {target}")
+    logger.info(f"open_folder: kind={kind_key} md5={md5} file_id={file_id} server_id={server_id} -> {target}")
 
     if os.name != "nt":
         raise HTTPException(status_code=400, detail="open_folder is only supported on Windows.")

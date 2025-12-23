@@ -90,6 +90,7 @@ export const useApi = () => {
     if (params && params.username) query.set('username', params.username)
     if (params && params.kind) query.set('kind', params.kind)
     if (params && params.md5) query.set('md5', params.md5)
+    if (params && params.file_id) query.set('file_id', params.file_id)
     if (params && params.server_id != null) query.set('server_id', String(params.server_id))
     const url = '/chat/media/open_folder' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url, { method: 'POST' })

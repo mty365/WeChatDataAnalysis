@@ -128,6 +128,25 @@
             </div>
           </div>
 
+          <!-- 获取密钥说明 -->
+          <div class="mb-6">
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div class="flex items-start">
+                <svg class="w-5 h-5 text-blue-600 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div class="text-sm text-blue-800">
+                  <div class="font-medium mb-2">获取密钥小提示</div>
+                  <ul class="list-disc list-inside space-y-1">
+                    <li><strong>AES 密钥</strong>仅在部分图片（V4-V2）解密时需要；仅有 XOR 也可以先继续下一步，失败原因会提示。</li>
+                    <li>获取 AES 需要微信正在运行；部分环境需<strong>以管理员身份运行后端</strong>（否则可能无法读取微信进程内存）。</li>
+                    <li>若一直获取不到 AES：完全退出微信 → 重新启动并登录 → 打开朋友圈图片并点开大图 2-3 次 → 回到本页点<strong>强制重新提取</strong>。</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- 密钥信息显示 -->
           <div class="space-y-4 mb-6">
             <div class="bg-gray-50 rounded-lg p-4">
@@ -172,6 +191,72 @@
             </div>
           </div>
 
+          <!-- 手动输入密钥（自动获取失败时） -->
+          <div class="mb-6">
+            <details class="text-sm">
+              <summary class="cursor-pointer text-[#7F7F7F] hover:text-[#000000e6]">
+                <span class="ml-1">手动输入密钥（自动获取失败时）</span>
+              </summary>
+              <div class="mt-3 bg-gray-50 rounded-lg p-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm font-medium text-[#000000e6] mb-2">XOR 密钥 <span class="text-red-500">*</span></label>
+                    <input
+                      v-model="manualKeys.xor_key"
+                      type="text"
+                      placeholder="例如：0xA5 或 A5"
+                      class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
+                    />
+                    <p v-if="manualKeyErrors.xor_key" class="text-xs text-red-500 mt-1">{{ manualKeyErrors.xor_key }}</p>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-[#000000e6] mb-2">AES 密钥（可选）</label>
+                    <input
+                      v-model="manualKeys.aes_key"
+                      type="text"
+                      placeholder="16 个字符（V4-V2 需要）"
+                      class="w-full px-4 py-2 border border-[#EDEDED] rounded-lg focus:ring-2 focus:ring-[#10AEEF] focus:border-transparent font-mono"
+                    />
+                    <p v-if="manualKeyErrors.aes_key" class="text-xs text-red-500 mt-1">{{ manualKeyErrors.aes_key }}</p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap gap-3 mt-4">
+                  <button
+                    type="button"
+                    @click="applyManualKeys({ save: false })"
+                    class="inline-flex items-center px-4 py-2 bg-white text-[#10AEEF] border border-[#10AEEF] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
+                  >
+                    使用手动密钥
+                  </button>
+                  <button
+                    type="button"
+                    @click="applyManualKeys({ save: true })"
+                    :disabled="manualSaving"
+                    class="inline-flex items-center px-4 py-2 bg-[#10AEEF] text-white rounded-lg font-medium hover:bg-[#0D9BD9] transition-all duration-200 disabled:opacity-50"
+                  >
+                    {{ manualSaving ? '保存中...' : '保存并使用' }}
+                  </button>
+                  <button
+                    type="button"
+                    @click="clearManualKeys"
+                    class="inline-flex items-center px-4 py-2 bg-white text-[#7F7F7F] border border-[#EDEDED] rounded-lg font-medium hover:bg-gray-50 transition-all duration-200"
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div class="text-xs text-[#7F7F7F] mt-3">
+                  <p>说明：</p>
+                  <ul class="list-disc list-inside space-y-1 mt-1">
+                    <li>XOR 是 1 字节十六进制（00-FF）。</li>
+                    <li>AES 仅在部分图片（V4-V2）解密时需要；输入任意 16 个字符即可（会自动截取前 16 位）。</li>
+                  </ul>
+                </div>
+              </div>
+            </details>
+          </div>
+
           <!-- 操作按钮 -->
           <div class="flex gap-3 justify-center pt-4 border-t border-[#EDEDED]">
             <button
@@ -196,7 +281,6 @@
               强制重新提取
             </button>
             <button
-              v-if="mediaKeys.xor_key"
               @click="goToStep(2)"
               class="inline-flex items-center px-6 py-3 bg-[#07C160] text-white rounded-lg font-medium hover:bg-[#06AD56] transition-all duration-200"
             >
@@ -319,7 +403,7 @@
                 <p class="mb-2">可能的失败原因：</p>
                 <ul class="list-disc list-inside space-y-1">
                   <li><strong>解密后非有效图片</strong>：文件不是图片格式(如视频缩略图损坏)</li>
-                  <li><strong>V4-V2版本需要AES密钥</strong>：需要微信运行，且部分环境需以管理员身份运行后端才能提取</li>
+                  <li><strong>V4-V2版本需要AES密钥</strong>：需要微信运行，且部分环境需以管理员身份运行后端才能提取；可尝试打开朋友圈图片并点开大图 2-3 次后再提取</li>
                   <li><strong>未知加密版本</strong>：新版微信使用了不支持的加密方式</li>
                   <li><strong>文件为空</strong>：原始文件损坏或为空文件</li>
                 </ul>
@@ -398,7 +482,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useApi } from '~/composables/useApi'
 
-const { decryptDatabase, getMediaKeys, decryptAllMedia } = useApi()
+const { decryptDatabase, getMediaKeys, decryptAllMedia, saveMediaKeys } = useApi()
 
 const loading = ref(false)
 const error = ref('')
@@ -432,6 +516,81 @@ const mediaKeys = reactive({
 const mediaLoading = ref(false)
 const copyMessage = ref('')
 let copyMessageTimer = null
+
+// 手动输入密钥（自动获取失败时使用）
+const manualKeys = reactive({
+  xor_key: '',
+  aes_key: ''
+})
+const manualKeyErrors = reactive({
+  xor_key: '',
+  aes_key: ''
+})
+const manualSaving = ref(false)
+
+const normalizeXorKey = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return { ok: false, value: '', message: '请输入 XOR 密钥' }
+  const hex = raw.toLowerCase().replace(/^0x/, '')
+  if (!/^[0-9a-f]{1,2}$/.test(hex)) return { ok: false, value: '', message: 'XOR 密钥格式无效（如 0xA5 或 A5）' }
+  const n = parseInt(hex, 16)
+  if (!Number.isFinite(n) || n < 0 || n > 255) return { ok: false, value: '', message: 'XOR 密钥必须在 0x00-0xFF 范围' }
+  return { ok: true, value: `0x${n.toString(16).toUpperCase().padStart(2, '0')}`, message: '' }
+}
+
+const normalizeAesKey = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return { ok: true, value: '', message: '' }
+  if (raw.length < 16) return { ok: false, value: '', message: 'AES 密钥长度不足（至少 16 个字符）' }
+  return { ok: true, value: raw.slice(0, 16), message: '' }
+}
+
+const applyManualKeys = async (options = { save: false }) => {
+  manualKeyErrors.xor_key = ''
+  manualKeyErrors.aes_key = ''
+  error.value = ''
+
+  const xor = normalizeXorKey(manualKeys.xor_key)
+  if (!xor.ok) {
+    manualKeyErrors.xor_key = xor.message
+    return
+  }
+
+  const aes = normalizeAesKey(manualKeys.aes_key)
+  if (!aes.ok) {
+    manualKeyErrors.aes_key = aes.message
+    return
+  }
+
+  mediaKeys.xor_key = xor.value
+  mediaKeys.aes_key = aes.value
+  mediaKeys.message = options?.save ? '已保存并使用手动密钥' : '已使用手动密钥（仅本次）'
+
+  if (!options?.save) return
+  if (!aes.value) {
+    mediaKeys.message = '已使用手动密钥（未保存：AES 为空）'
+    return
+  }
+
+  try {
+    manualSaving.value = true
+    await saveMediaKeys({
+      xor_key: xor.value,
+      aes_key: aes.value
+    })
+  } catch (e) {
+    mediaKeys.message = '已使用手动密钥（保存失败，可继续解密）'
+  } finally {
+    manualSaving.value = false
+  }
+}
+
+const clearManualKeys = () => {
+  manualKeys.xor_key = ''
+  manualKeys.aes_key = ''
+  manualKeyErrors.xor_key = ''
+  manualKeyErrors.aes_key = ''
+}
 
 // 图片解密相关
 const mediaDecryptResult = ref(null)
