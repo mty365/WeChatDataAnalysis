@@ -138,6 +138,42 @@ export const useApi = () => {
       }
     })
   }
+
+  // 聊天记录导出（离线zip）
+  const createChatExport = async (data = {}) => {
+    return await request('/chat/exports', {
+      method: 'POST',
+      body: {
+        account: data.account || null,
+        scope: data.scope || 'selected',
+        usernames: Array.isArray(data.usernames) ? data.usernames : [],
+        format: data.format || 'json',
+        start_time: data.start_time != null ? Number(data.start_time) : null,
+        end_time: data.end_time != null ? Number(data.end_time) : null,
+        include_hidden: !!data.include_hidden,
+        include_official: !!data.include_official,
+        include_media: data.include_media == null ? true : !!data.include_media,
+        media_kinds: Array.isArray(data.media_kinds) ? data.media_kinds : ['image', 'emoji', 'video', 'video_thumb', 'voice', 'file'],
+        allow_process_key_extract: !!data.allow_process_key_extract,
+        privacy_mode: !!data.privacy_mode,
+        file_name: data.file_name || null
+      }
+    })
+  }
+
+  const getChatExport = async (exportId) => {
+    if (!exportId) throw new Error('Missing exportId')
+    return await request(`/chat/exports/${encodeURIComponent(String(exportId))}`)
+  }
+
+  const listChatExports = async () => {
+    return await request('/chat/exports')
+  }
+
+  const cancelChatExport = async (exportId) => {
+    if (!exportId) throw new Error('Missing exportId')
+    return await request(`/chat/exports/${encodeURIComponent(String(exportId))}`, { method: 'DELETE' })
+  }
   
   return {
     detectWechat,
@@ -151,6 +187,10 @@ export const useApi = () => {
     downloadChatEmoji,
     getMediaKeys,
     saveMediaKeys,
-    decryptAllMedia
+    decryptAllMedia,
+    createChatExport,
+    getChatExport,
+    listChatExports,
+    cancelChatExport
   }
 }

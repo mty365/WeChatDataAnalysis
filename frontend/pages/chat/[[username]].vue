@@ -129,6 +129,13 @@
             >
               刷新
             </button>
+            <button
+              class="text-xs px-3 py-1 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
+              @click="openExportModal"
+              :disabled="isExportCreating"
+            >
+              导出
+            </button>
           </div>
         </div>
 
@@ -419,6 +426,294 @@
         打开文件夹
       </button>
     </div>
+
+    <!-- 导出弹窗 -->
+    <div v-if="exportModalOpen" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div class="absolute inset-0 bg-black/40" @click="closeExportModal"></div>
+      <div class="relative w-[780px] max-w-[92vw] bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-200 flex items-center">
+          <div class="text-base font-medium text-gray-900">导出聊天记录（离线 ZIP）</div>
+          <button class="ml-auto text-gray-400 hover:text-gray-700" type="button" @click="closeExportModal">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="p-5 max-h-[75vh] overflow-y-auto space-y-4">
+          <div v-if="exportError" class="text-sm text-red-600 whitespace-pre-wrap">{{ exportError }}</div>
+          <div v-if="privacyMode" class="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-md px-3 py-2">
+            已开启隐私模式：导出将隐藏会话/用户名/内容，并且不会打包头像与媒体。
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div class="text-sm font-medium text-gray-800 mb-2">范围</div>
+              <div class="space-y-2 text-sm text-gray-700">
+                <label class="flex items-center gap-2">
+                  <input type="radio" value="current" v-model="exportScope" />
+                  <span>当前会话</span>
+                </label>
+                <label class="flex items-center gap-2">
+                  <input type="radio" value="selected" v-model="exportScope" />
+                  <span>选择会话（批量）</span>
+                </label>
+                <label class="flex items-center gap-2">
+                  <input type="radio" value="all" v-model="exportScope" />
+                  <span>全部会话</span>
+                </label>
+                <label class="flex items-center gap-2">
+                  <input type="radio" value="groups" v-model="exportScope" />
+                  <span>仅群聊</span>
+                </label>
+                <label class="flex items-center gap-2">
+                  <input type="radio" value="singles" v-model="exportScope" />
+                  <span>仅单聊</span>
+                </label>
+              </div>
+
+              <div v-if="exportScope === 'selected'" class="mt-3">
+                <div class="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    class="text-xs px-2 py-1 rounded border border-gray-200"
+                    :class="exportListTab === 'all' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white hover:bg-gray-50 text-gray-700'"
+                    @click="exportListTab = 'all'"
+                  >
+                    全部 {{ exportContactCounts.total }}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-xs px-2 py-1 rounded border border-gray-200"
+                    :class="exportListTab === 'groups' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white hover:bg-gray-50 text-gray-700'"
+                    @click="exportListTab = 'groups'"
+                  >
+                    群聊 {{ exportContactCounts.groups }}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-xs px-2 py-1 rounded border border-gray-200"
+                    :class="exportListTab === 'singles' ? 'bg-[#03C160] text-white border-[#03C160]' : 'bg-white hover:bg-gray-50 text-gray-700'"
+                    @click="exportListTab = 'singles'"
+                  >
+                    单聊 {{ exportContactCounts.singles }}
+                  </button>
+                  <div class="ml-auto text-xs text-gray-500">点击 tab 筛选</div>
+                </div>
+                <div class="flex items-center gap-2 mb-2">
+                  <input
+                    v-model="exportSearchQuery"
+                    type="text"
+                    placeholder="搜索会话（名称/username）"
+                    class="w-full px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                  />
+                </div>
+                <div class="border border-gray-200 rounded-md max-h-56 overflow-y-auto">
+                  <div
+                    v-for="c in exportFilteredContacts"
+                    :key="c.username"
+                    class="px-3 py-2 border-b border-gray-100 flex items-center gap-2 hover:bg-gray-50"
+                  >
+                    <input type="checkbox" :value="c.username" v-model="exportSelectedUsernames" />
+                    <div class="w-9 h-9 rounded-md overflow-hidden bg-gray-200 flex-shrink-0" :class="{ 'privacy-blur': privacyMode }">
+                      <img v-if="c.avatar" :src="c.avatar" :alt="c.name + '头像'" class="w-full h-full object-cover" />
+                      <div v-else class="w-full h-full flex items-center justify-center text-xs font-bold text-gray-600">
+                        {{ (c.name || c.username || '?').charAt(0) }}
+                      </div>
+                    </div>
+                    <div class="min-w-0" :class="{ 'privacy-blur': privacyMode }">
+                      <div class="text-sm text-gray-800 truncate">
+                        {{ c.name }}
+                        <span class="text-xs text-gray-500">{{ c.isGroup ? '（群）' : '' }}</span>
+                      </div>
+                      <div class="text-xs text-gray-500 truncate">{{ c.username }}</div>
+                    </div>
+                  </div>
+                  <div v-if="exportFilteredContacts.length === 0" class="px-3 py-3 text-sm text-gray-500">
+                    无匹配会话
+                  </div>
+                </div>
+                <div class="mt-2 text-xs text-gray-500">
+                  已选 {{ exportSelectedUsernames.length }} 个会话
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-4">
+              <div>
+                <div class="text-sm font-medium text-gray-800 mb-2">格式</div>
+                <div class="flex items-center gap-4 text-sm text-gray-700">
+                  <label class="flex items-center gap-2">
+                    <input type="radio" value="json" v-model="exportFormat" />
+                    <span>JSON</span>
+                  </label>
+                  <label class="flex items-center gap-2">
+                    <input type="radio" value="txt" v-model="exportFormat" />
+                    <span>TXT</span>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <div class="text-sm font-medium text-gray-800 mb-2">时间范围（可选）</div>
+                <div class="grid grid-cols-2 gap-2">
+                  <input
+                    v-model="exportStartLocal"
+                    type="datetime-local"
+                    class="px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                  />
+                  <input
+                    v-model="exportEndLocal"
+                    type="datetime-local"
+                    class="px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                  />
+                </div>
+                <div class="flex items-center gap-2 mt-2">
+                  <button type="button" class="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50" @click="exportStartLocal=''; exportEndLocal=''">全部</button>
+                  <button type="button" class="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50" @click="applyExportQuickRangeDays(7)">最近7天</button>
+                  <button type="button" class="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50" @click="applyExportQuickRangeDays(30)">最近30天</button>
+                </div>
+              </div>
+
+              <div>
+                <div class="text-sm font-medium text-gray-800 mb-2">媒体（离线）</div>
+                <label class="flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" v-model="exportIncludeMedia" :disabled="privacyMode" />
+                  <span>打包媒体文件到 ZIP（图片/表情/视频/语音/文件）</span>
+                </label>
+                <div class="grid grid-cols-2 gap-2 mt-2 text-sm text-gray-700">
+                  <label class="flex items-center gap-2" :class="(exportIncludeMedia && !privacyMode) ? '' : 'opacity-50'">
+                    <input type="checkbox" value="image" v-model="exportMediaKinds" :disabled="!exportIncludeMedia || privacyMode" />
+                    <span>图片</span>
+                  </label>
+                  <label class="flex items-center gap-2" :class="(exportIncludeMedia && !privacyMode) ? '' : 'opacity-50'">
+                    <input type="checkbox" value="emoji" v-model="exportMediaKinds" :disabled="!exportIncludeMedia || privacyMode" />
+                    <span>表情</span>
+                  </label>
+                  <label class="flex items-center gap-2" :class="(exportIncludeMedia && !privacyMode) ? '' : 'opacity-50'">
+                    <input type="checkbox" value="video" v-model="exportMediaKinds" :disabled="!exportIncludeMedia || privacyMode" />
+                    <span>视频</span>
+                  </label>
+                  <label class="flex items-center gap-2" :class="(exportIncludeMedia && !privacyMode) ? '' : 'opacity-50'">
+                    <input type="checkbox" value="voice" v-model="exportMediaKinds" :disabled="!exportIncludeMedia || privacyMode" />
+                    <span>语音</span>
+                  </label>
+                  <label class="flex items-center gap-2" :class="(exportIncludeMedia && !privacyMode) ? '' : 'opacity-50'">
+                    <input type="checkbox" value="file" v-model="exportMediaKinds" :disabled="!exportIncludeMedia || privacyMode" />
+                    <span>文件</span>
+                  </label>
+                  <label class="flex items-center gap-2" :class="(exportIncludeMedia && !privacyMode) ? '' : 'opacity-50'">
+                    <input type="checkbox" value="video_thumb" v-model="exportMediaKinds" :disabled="!exportIncludeMedia || privacyMode" />
+                    <span>视频缩略图</span>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <div class="text-sm font-medium text-gray-800 mb-2">文件名（可选）</div>
+                <input
+                  v-model="exportFileName"
+                  type="text"
+                  placeholder="例如：我的微信导出_2025-12-23.zip"
+                  class="w-full px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#03C160]/30"
+                />
+                <div class="mt-1 text-xs text-gray-500">不填则自动生成（输出位置：output/exports/{账号}/）。</div>
+              </div>
+
+              <div class="space-y-2">
+                <label class="flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" v-model="exportIncludeHidden" />
+                  <span>包含隐藏会话（仅对“全部/群/单”有效）</span>
+                </label>
+                <label class="flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" v-model="exportIncludeOfficial" />
+                  <span>包含公众号/官方会话（仅对“全部/群/单”有效）</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="exportJob" class="border border-gray-200 rounded-md bg-gray-50 p-4">
+            <div class="flex items-center justify-between">
+              <div class="text-sm font-medium text-gray-900">任务：{{ exportJob.exportId }}</div>
+              <div class="text-xs text-gray-600">状态：{{ exportJob.status }}</div>
+            </div>
+            <div class="mt-2 text-xs text-gray-700 space-y-2">
+              <div class="flex items-center justify-between">
+                <div>会话：{{ exportJob.progress?.conversationsDone || 0 }}/{{ exportJob.progress?.conversationsTotal || 0 }}</div>
+                <div class="text-gray-600">{{ exportOverallPercent }}%</div>
+              </div>
+              <div class="h-2 rounded-full bg-white border border-gray-200 overflow-hidden">
+                <div
+                  class="h-full bg-[#03C160] transition-all duration-300"
+                  :style="{ width: exportOverallPercent + '%' }"
+                ></div>
+              </div>
+
+              <div v-if="exportJob.progress?.currentConversationUsername" class="space-y-1">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="truncate">
+                    当前：{{ exportJob.progress?.currentConversationName || exportJob.progress?.currentConversationUsername }}
+                    （{{ exportJob.progress?.currentConversationMessagesExported || 0 }}/{{ exportJob.progress?.currentConversationMessagesTotal || 0 }}）
+                  </div>
+                  <div class="text-gray-600">
+                    <span v-if="exportCurrentPercent != null">{{ exportCurrentPercent }}%</span>
+                    <span v-else>…</span>
+                  </div>
+                </div>
+                <div class="h-2 rounded-full bg-white border border-gray-200 overflow-hidden">
+                  <div
+                    v-if="exportCurrentPercent != null"
+                    class="h-full bg-sky-500 transition-all duration-300"
+                    :style="{ width: exportCurrentPercent + '%' }"
+                  ></div>
+                  <div v-else class="h-full bg-sky-500/60 animate-pulse" style="width: 30%"></div>
+                </div>
+              </div>
+
+              <div>消息：{{ exportJob.progress?.messagesExported || 0 }}；媒体：{{ exportJob.progress?.mediaCopied || 0 }}；缺失：{{ exportJob.progress?.mediaMissing || 0 }}</div>
+            </div>
+
+            <div class="mt-3 flex items-center gap-2">
+              <a
+                v-if="exportJob.status === 'done'"
+                class="text-sm px-3 py-2 rounded-md bg-[#03C160] text-white hover:bg-[#02a650]"
+                :href="getExportDownloadUrl(exportJob.exportId)"
+                target="_blank"
+              >
+                下载 ZIP
+              </a>
+              <button
+                v-if="exportJob.status === 'running'"
+                class="text-sm px-3 py-2 rounded-md bg-white border border-gray-200 hover:bg-gray-50"
+                type="button"
+                @click="cancelCurrentExport"
+              >
+                取消任务
+              </button>
+            </div>
+
+            <div v-if="exportJob.status === 'error'" class="mt-2 text-sm text-red-600 whitespace-pre-wrap">
+              {{ exportJob.error || '导出失败' }}
+            </div>
+          </div>
+        </div>
+
+        <div class="px-5 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
+          <button class="text-sm px-3 py-2 rounded-md bg-white border border-gray-200 hover:bg-gray-50" type="button" @click="closeExportModal">
+            关闭
+          </button>
+          <button
+            class="text-sm px-3 py-2 rounded-md bg-[#03C160] text-white hover:bg-[#02a650] disabled:opacity-60"
+            type="button"
+            @click="startChatExport"
+            :disabled="isExportCreating"
+          >
+            {{ isExportCreating ? '创建中...' : '开始导出' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -499,6 +794,286 @@ const allMessages = ref({})
 const messagesMeta = ref({})
 const isLoadingMessages = ref(false)
 const messagesError = ref('')
+
+// 导出（离线 zip）
+const exportModalOpen = ref(false)
+const isExportCreating = ref(false)
+const exportError = ref('')
+
+// current: 当前会话（映射为 selected + 单个 username）
+const exportScope = ref('current') // current | selected | all | groups | singles
+const exportFormat = ref('json') // json | txt
+const exportIncludeMedia = ref(true)
+const exportMediaKinds = ref(['image', 'emoji', 'video', 'video_thumb', 'voice', 'file'])
+const exportIncludeHidden = ref(false)
+const exportIncludeOfficial = ref(false)
+
+const exportStartLocal = ref('') // datetime-local
+const exportEndLocal = ref('') // datetime-local
+const exportFileName = ref('')
+
+const exportSearchQuery = ref('')
+const exportListTab = ref('all') // all | groups | singles
+const exportSelectedUsernames = ref([])
+
+const exportJob = ref(null)
+let exportPollTimer = null
+let exportEventSource = null
+
+const _clamp01 = (n) => Math.min(1, Math.max(0, n))
+const _asNumber = (v) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+const exportOverallPercent = computed(() => {
+  const job = exportJob.value
+  const p = job?.progress || {}
+  const total = _asNumber(p.conversationsTotal)
+  const done = _asNumber(p.conversationsDone)
+  if (total <= 0) return 0
+
+  const currentTotal = _asNumber(p.currentConversationMessagesTotal)
+  const currentDone = _asNumber(p.currentConversationMessagesExported)
+  const fracCurrent = currentTotal > 0 ? _clamp01(currentDone / currentTotal) : 0
+  const overall = _clamp01((done + (job?.status === 'running' ? fracCurrent : 0)) / total)
+  return Math.round(overall * 100)
+})
+
+const exportCurrentPercent = computed(() => {
+  const p = exportJob.value?.progress || {}
+  const total = _asNumber(p.currentConversationMessagesTotal)
+  const done = _asNumber(p.currentConversationMessagesExported)
+  if (total <= 0) return null
+  return Math.round(_clamp01(done / total) * 100)
+})
+
+const exportFilteredContacts = computed(() => {
+  const q = String(exportSearchQuery.value || '').trim().toLowerCase()
+  let list = Array.isArray(contacts.value) ? contacts.value : []
+
+  const tab = String(exportListTab.value || 'all')
+  if (tab === 'groups') list = list.filter((c) => !!c?.isGroup)
+  if (tab === 'singles') list = list.filter((c) => !c?.isGroup)
+
+  if (!q) return list
+  return list.filter((c) => {
+    const name = String(c?.name || '').toLowerCase()
+    const username = String(c?.username || '').toLowerCase()
+    return name.includes(q) || username.includes(q)
+  })
+})
+
+const exportContactCounts = computed(() => {
+  const list = Array.isArray(contacts.value) ? contacts.value : []
+  const total = list.length
+  const groups = list.filter((c) => !!c?.isGroup).length
+  return { total, groups, singles: total - groups }
+})
+
+const toUnixSeconds = (datetimeLocal) => {
+  const v = String(datetimeLocal || '').trim()
+  if (!v) return null
+  const d = new Date(v)
+  const ms = d.getTime()
+  if (!ms || Number.isNaN(ms)) return null
+  return Math.floor(ms / 1000)
+}
+
+const stopExportPolling = () => {
+  if (exportEventSource) {
+    try {
+      exportEventSource.close()
+    } catch (e) {
+      // ignore
+    }
+    exportEventSource = null
+  }
+  if (exportPollTimer) {
+    clearInterval(exportPollTimer)
+    exportPollTimer = null
+  }
+}
+
+const startExportHttpPolling = (exportId) => {
+  if (!exportId) return
+  const api = useApi()
+  exportPollTimer = setInterval(async () => {
+    try {
+      const resp = await api.getChatExport(exportId)
+      exportJob.value = resp?.job || exportJob.value
+
+      const st = String(exportJob.value?.status || '')
+      if (st === 'done' || st === 'error' || st === 'cancelled') {
+        stopExportPolling()
+      }
+    } catch (e) {
+      // keep polling; transient errors are possible while exporting
+    }
+  }, 1200)
+}
+
+const startExportPolling = (exportId) => {
+  stopExportPolling()
+  if (!exportId) return
+
+  if (process.client && typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
+    const base = 'http://localhost:8000'
+    const url = `${base}/api/chat/exports/${encodeURIComponent(String(exportId))}/events`
+    try {
+      exportEventSource = new EventSource(url)
+      exportEventSource.onmessage = (ev) => {
+        try {
+          const next = JSON.parse(String(ev.data || '{}'))
+          exportJob.value = next || exportJob.value
+          const st = String(exportJob.value?.status || '')
+          if (st === 'done' || st === 'error' || st === 'cancelled') {
+            stopExportPolling()
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      exportEventSource.onerror = () => {
+        // fallback to HTTP polling
+        try {
+          exportEventSource?.close()
+        } catch (e) {
+          // ignore
+        }
+        exportEventSource = null
+        if (!exportPollTimer) startExportHttpPolling(exportId)
+      }
+      return
+    } catch (e) {
+      exportEventSource = null
+    }
+  }
+
+  startExportHttpPolling(exportId)
+}
+
+const openExportModal = () => {
+  exportModalOpen.value = true
+  exportError.value = ''
+  exportListTab.value = 'all'
+
+  if (privacyMode.value) {
+    exportIncludeMedia.value = false
+  }
+
+  if (selectedContact.value?.username) {
+    exportScope.value = 'current'
+  } else {
+    exportScope.value = 'all'
+  }
+}
+
+const closeExportModal = () => {
+  exportModalOpen.value = false
+  exportError.value = ''
+}
+
+watch(exportModalOpen, (open) => {
+  if (!process.client) return
+  if (!open) {
+    stopExportPolling()
+    return
+  }
+
+  const exportId = exportJob.value?.exportId
+  const st = String(exportJob.value?.status || '')
+  if (exportId && (st === 'queued' || st === 'running')) {
+    startExportPolling(exportId)
+  }
+})
+
+const getExportDownloadUrl = (exportId) => {
+  const base = process.client ? 'http://localhost:8000' : ''
+  return `${base}/api/chat/exports/${encodeURIComponent(String(exportId || ''))}/download`
+}
+
+const startChatExport = async () => {
+  exportError.value = ''
+  if (!selectedAccount.value) {
+    exportError.value = '未选择账号'
+    return
+  }
+
+  let scope = exportScope.value
+  let usernames = []
+  if (scope === 'current') {
+    scope = 'selected'
+    if (selectedContact.value?.username) {
+      usernames = [selectedContact.value.username]
+    }
+  } else if (scope === 'selected') {
+    usernames = Array.isArray(exportSelectedUsernames.value) ? exportSelectedUsernames.value.filter(Boolean) : []
+  }
+
+  if (scope === 'selected' && (!usernames || usernames.length === 0)) {
+    exportError.value = '请选择至少一个会话'
+    return
+  }
+
+  const startTime = toUnixSeconds(exportStartLocal.value)
+  const endTime = toUnixSeconds(exportEndLocal.value)
+  if (startTime && endTime && startTime > endTime) {
+    exportError.value = '时间范围不合法：开始时间不能晚于结束时间'
+    return
+  }
+
+  isExportCreating.value = true
+  try {
+    const api = useApi()
+    const resp = await api.createChatExport({
+      account: selectedAccount.value,
+      scope,
+      usernames,
+      format: exportFormat.value,
+      start_time: startTime,
+      end_time: endTime,
+      include_hidden: exportIncludeHidden.value,
+      include_official: exportIncludeOfficial.value,
+      include_media: exportIncludeMedia.value && !privacyMode.value,
+      media_kinds: (exportIncludeMedia.value && !privacyMode.value) ? exportMediaKinds.value : [],
+      privacy_mode: !!privacyMode.value,
+      file_name: exportFileName.value || null
+    })
+
+    exportJob.value = resp?.job || null
+    const exportId = exportJob.value?.exportId
+    if (exportId) startExportPolling(exportId)
+  } catch (e) {
+    exportError.value = e?.message || '创建导出任务失败'
+  } finally {
+    isExportCreating.value = false
+  }
+}
+
+const cancelCurrentExport = async () => {
+  const exportId = exportJob.value?.exportId
+  if (!exportId) return
+
+  try {
+    const api = useApi()
+    await api.cancelChatExport(exportId)
+    const resp = await api.getChatExport(exportId)
+    exportJob.value = resp?.job || exportJob.value
+  } catch (e) {
+    exportError.value = e?.message || '取消导出失败'
+  }
+}
+
+const applyExportQuickRangeDays = (days) => {
+  const now = new Date()
+  const end = new Date(now.getTime())
+  const start = new Date(now.getTime() - Number(days) * 24 * 3600 * 1000)
+  const pad = (n) => String(n).padStart(2, '0')
+  const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  exportStartLocal.value = fmt(start)
+  exportEndLocal.value = fmt(end)
+}
 
 const messagePageSize = 50
 
@@ -1239,6 +1814,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (!process.client) return
   document.removeEventListener('click', onGlobalClick)
+  stopExportPolling()
 })
 
 const loadMessages = async ({ username, reset }) => {
@@ -1999,6 +2575,6 @@ const LinkCard = defineComponent({
 }
 
 .privacy-blur:hover {
-  filter: blur(4px);
+  filter: none;
 }
 </style>
