@@ -483,6 +483,24 @@ def _append_full_messages_from_rows(
                     if image_md5:
                         break
 
+            # Prefer message_resource.db md5 for local files: XML md5 frequently differs from the on-disk *.dat basename
+            # (especially for *_t.dat thumbnails), causing the media endpoint to 404.
+            if resource_conn is not None:
+                try:
+                    resource_md5 = _lookup_resource_md5(
+                        resource_conn,
+                        resource_chat_id,
+                        message_local_type=local_type,
+                        server_id=int(r["server_id"] or 0),
+                        local_id=local_id,
+                        create_time=create_time,
+                    )
+                except Exception:
+                    resource_md5 = ""
+                resource_md5 = str(resource_md5 or "").strip().lower()
+                if len(resource_md5) == 32 and all(c in "0123456789abcdef" for c in resource_md5):
+                    image_md5 = resource_md5
+
             # Extract CDN URL (some versions store a non-HTTP "file id" string here)
             _cdn_url_or_id = (
                 _extract_xml_attr(raw_text, "cdnthumburl")
@@ -501,15 +519,6 @@ def _append_full_messages_from_rows(
             if (not image_url) and _cdn_url_or_id:
                 image_file_id = _cdn_url_or_id
 
-            if (not image_md5) and resource_conn is not None:
-                image_md5 = _lookup_resource_md5(
-                    resource_conn,
-                    resource_chat_id,
-                    message_local_type=local_type,
-                    server_id=int(r["server_id"] or 0),
-                    local_id=local_id,
-                    create_time=create_time,
-                )
             content_text = "[图片]"
         elif local_type == 34:
             render_type = "voice"
@@ -1317,6 +1326,24 @@ def _collect_chat_messages(
                             if image_md5:
                                 break
 
+                    # Prefer message_resource.db md5 for local files: XML md5 frequently differs from the on-disk *.dat basename
+                    # (especially for *_t.dat thumbnails), causing the media endpoint to 404.
+                    if resource_conn is not None:
+                        try:
+                            resource_md5 = _lookup_resource_md5(
+                                resource_conn,
+                                resource_chat_id,
+                                message_local_type=local_type,
+                                server_id=int(r["server_id"] or 0),
+                                local_id=local_id,
+                                create_time=create_time,
+                            )
+                        except Exception:
+                            resource_md5 = ""
+                        resource_md5 = str(resource_md5 or "").strip().lower()
+                        if len(resource_md5) == 32 and all(c in "0123456789abcdef" for c in resource_md5):
+                            image_md5 = resource_md5
+
                     # Extract CDN URL (some versions store a non-HTTP "file id" string here)
                     _cdn_url_or_id = (
                         _extract_xml_attr(raw_text, "cdnthumburl")
@@ -1332,16 +1359,6 @@ def _collect_chat_messages(
                     image_url = _cdn_url_or_id if _cdn_url_or_id.startswith(("http://", "https://")) else ""
                     if (not image_url) and _cdn_url_or_id:
                         image_file_id = _cdn_url_or_id
-
-                    if (not image_md5) and resource_conn is not None:
-                        image_md5 = _lookup_resource_md5(
-                            resource_conn,
-                            resource_chat_id,
-                            message_local_type=local_type,
-                            server_id=int(r["server_id"] or 0),
-                            local_id=local_id,
-                            create_time=create_time,
-                        )
                     content_text = "[图片]"
                 elif local_type == 34:
                     render_type = "voice"
@@ -1841,6 +1858,24 @@ async def list_chat_messages(
                             if image_md5:
                                 break
 
+                    # Prefer message_resource.db md5 for local files: XML md5 frequently differs from the on-disk *.dat basename
+                    # (especially for *_t.dat thumbnails), causing the media endpoint to 404.
+                    if resource_conn is not None:
+                        try:
+                            resource_md5 = _lookup_resource_md5(
+                                resource_conn,
+                                resource_chat_id,
+                                message_local_type=local_type,
+                                server_id=int(r["server_id"] or 0),
+                                local_id=local_id,
+                                create_time=create_time,
+                            )
+                        except Exception:
+                            resource_md5 = ""
+                        resource_md5 = str(resource_md5 or "").strip().lower()
+                        if len(resource_md5) == 32 and all(c in "0123456789abcdef" for c in resource_md5):
+                            image_md5 = resource_md5
+
                     # Extract CDN URL (some versions store a non-HTTP "file id" string here)
                     _cdn_url_or_id = (
                         _extract_xml_attr(raw_text, "cdnthumburl")
@@ -1856,16 +1891,6 @@ async def list_chat_messages(
                     image_url = _cdn_url_or_id if _cdn_url_or_id.startswith(("http://", "https://")) else ""
                     if (not image_url) and _cdn_url_or_id:
                         image_file_id = _cdn_url_or_id
-
-                    if (not image_md5) and resource_conn is not None:
-                        image_md5 = _lookup_resource_md5(
-                            resource_conn,
-                            resource_chat_id,
-                            message_local_type=local_type,
-                            server_id=int(r["server_id"] or 0),
-                            local_id=local_id,
-                            create_time=create_time,
-                        )
                     content_text = "[图片]"
                 elif local_type == 34:
                     render_type = "voice"
