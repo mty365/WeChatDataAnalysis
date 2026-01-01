@@ -152,6 +152,18 @@
               </button>
               <button
                 class="header-btn"
+                :class="realtimeEnabled ? 'bg-emerald-100 border-emerald-200' : ''"
+                @click="toggleRealtime"
+                :disabled="realtimeChecking"
+                :title="realtimeEnabled ? '关闭实时更新' : (realtimeAvailable ? '开启实时更新' : (realtimeStatusError || '实时模式不可用'))"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span>{{ realtimeEnabled ? '实时开' : '实时关' }}</span>
+              </button>
+              <button
+                class="header-btn"
                 @click="openExportModal"
                 :disabled="isExportCreating"
                 title="导出聊天记录"
@@ -1601,6 +1613,21 @@ const contactsError = ref('')
 const selectedAccount = ref(null)
 
 const availableAccounts = ref([])
+
+// 实时更新（WCDB DLL + db_storage watcher）
+const realtimeEnabled = ref(false)
+const realtimeAvailable = ref(false)
+const realtimeChecking = ref(false)
+const realtimeStatusInfo = ref(null)
+const realtimeStatusError = ref('')
+let realtimeEventSource = null
+let realtimeRefreshFuture = null
+let realtimeRefreshQueued = false
+let realtimeSessionsRefreshFuture = null
+let realtimeSessionsRefreshQueued = false
+let realtimeFullSyncFuture = null
+let realtimeFullSyncQueued = false
+let realtimeFullSyncPriority = ''
 
 const allMessages = ref({})
 
@@ -3416,12 +3443,28 @@ const loadSessionsForSelectedAccount = async () => {
     return
   }
 
-  const sessionsResp = await api.listChatSessions({
-    account: selectedAccount.value,
-    limit: 400,
-    include_hidden: false,
-    include_official: false
-  })
+  const fetchSessions = async (source) => {
+    const params = {
+      account: selectedAccount.value,
+      limit: 400,
+      include_hidden: false,
+      include_official: false
+    }
+    if (source) params.source = source
+    return await api.listChatSessions(params)
+  }
+
+  let sessionsResp = null
+  if (realtimeEnabled.value) {
+    try {
+      sessionsResp = await fetchSessions('realtime')
+    } catch {
+      sessionsResp = null
+    }
+  }
+  if (!sessionsResp) {
+    sessionsResp = await fetchSessions('')
+  }
 
   const sessions = sessionsResp?.sessions || []
   contacts.value = sessions.map((s) => ({
@@ -3459,6 +3502,121 @@ const loadSessionsForSelectedAccount = async () => {
   highlightMessageId.value = ''
 
   await applyRouteSelection()
+}
+
+const refreshSessionsForSelectedAccount = async ({ sourceOverride } = {}) => {
+  if (!process.client || typeof window === 'undefined') return
+  if (!selectedAccount.value) return
+  if (isLoadingContacts.value) return
+
+  const api = useApi()
+  const prevSelected = selectedContact.value?.username || ''
+
+  const desiredSource = (sourceOverride != null)
+    ? String(sourceOverride || '').trim()
+    : (realtimeEnabled.value ? 'realtime' : '')
+
+  const params = {
+    account: selectedAccount.value,
+    limit: 400,
+    include_hidden: false,
+    include_official: false
+  }
+
+  let sessionsResp = null
+  if (desiredSource) {
+    try {
+      sessionsResp = await api.listChatSessions({ ...params, source: desiredSource })
+    } catch {
+      sessionsResp = null
+    }
+  }
+  if (!sessionsResp) {
+    try {
+      sessionsResp = await api.listChatSessions(params)
+    } catch {
+      return
+    }
+  }
+
+  const sessions = sessionsResp?.sessions || []
+  const nextContacts = sessions.map((s) => ({
+    id: s.id,
+    name: s.name || s.username || s.id,
+    avatar: s.avatar || null,
+    lastMessage: s.lastMessage || '',
+    lastMessageTime: s.lastMessageTime || '',
+    unreadCount: s.unreadCount || 0,
+    isGroup: !!s.isGroup,
+    username: s.username
+  }))
+
+  contacts.value = nextContacts
+
+  if (prevSelected) {
+    const matched = nextContacts.find((c) => c.username === prevSelected)
+    if (matched) {
+      selectedContact.value = matched
+    }
+  }
+}
+
+const queueRealtimeSessionsRefresh = () => {
+  if (realtimeSessionsRefreshFuture) {
+    realtimeSessionsRefreshQueued = true
+    return
+  }
+
+  realtimeSessionsRefreshFuture = refreshSessionsForSelectedAccount({ sourceOverride: 'realtime' }).finally(() => {
+    realtimeSessionsRefreshFuture = null
+    if (realtimeSessionsRefreshQueued) {
+      realtimeSessionsRefreshQueued = false
+      queueRealtimeSessionsRefresh()
+    }
+  })
+}
+
+const runRealtimeFullSync = async (priorityUsername) => {
+  if (!realtimeEnabled.value) return null
+  if (!process.client || typeof window === 'undefined') return null
+  if (!selectedAccount.value) return null
+
+  try {
+    const api = useApi()
+    return await api.syncChatRealtimeAll({
+      account: selectedAccount.value,
+      max_scan: 200,
+      priority_username: String(priorityUsername || '').trim(),
+      priority_max_scan: 600,
+      include_hidden: true,
+      include_official: true
+    })
+  } catch {
+    return null
+  }
+}
+
+const queueRealtimeFullSync = (priorityUsername) => {
+  const u = String(priorityUsername || '').trim()
+  if (u) realtimeFullSyncPriority = u
+
+  if (realtimeFullSyncFuture) {
+    realtimeFullSyncQueued = true
+    return realtimeFullSyncFuture
+  }
+
+  const priority = realtimeFullSyncPriority
+  realtimeFullSyncPriority = ''
+
+  realtimeFullSyncFuture = runRealtimeFullSync(priority).finally(() => {
+    realtimeFullSyncFuture = null
+    if (realtimeFullSyncQueued) {
+      realtimeFullSyncQueued = false
+      queueRealtimeFullSync(realtimeFullSyncPriority)
+    }
+  })
+
+  return realtimeFullSyncFuture
 }
 
 const onAccountChange = async () => {
@@ -4103,7 +4261,25 @@ onUnmounted(() => {
   highlightMessageTimer = null
   stopMessageSearchIndexPolling()
   stopExportPolling()
+  stopRealtimeStream()
 })
+
+const dedupeMessagesById = (list) => {
+  const arr = Array.isArray(list) ? list : []
+  const seen = new Set()
+  const out = []
+  for (const m of arr) {
+    const id = String(m?.id || '')
+    if (!id) {
+      out.push(m)
+      continue
+    }
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push(m)
+  }
+  return out
+}
 
 const loadMessages = async ({ username, reset }) => {
   if (!username) return
@@ -4126,16 +4302,19 @@ const loadMessages = async ({ username, reset }) => {
       username,
       limit: messagePageSize,
       offset,
-      order: 'asc'
+      order: 'asc',
     }
     if (messageTypeFilter.value && messageTypeFilter.value !== 'all') {
       params.render_types = messageTypeFilter.value
     }
 
+    if (reset) {
+      await queueRealtimeFullSync(username)
+    }
     const resp = await api.listChatMessages(params)
 
     const raw = resp?.messages || []
-    const mapped = raw.map(normalizeMessage)
+    const mapped = dedupeMessagesById(raw.map(normalizeMessage))
 
     if (activeMessagesFor.value !== username) {
       return
@@ -4147,9 +4326,17 @@ const loadMessages = async ({ username, reset }) => {
         [username]: mapped
       }
     } else {
+      const existingIds = new Set(existing.map((m) => String(m?.id || '')))
+      const older = mapped.filter((m) => {
+        const id = String(m?.id || '')
+        if (!id) return true
+        if (existingIds.has(id)) return false
+        existingIds.add(id)
+        return true
+      })
       allMessages.value = {
         ...allMessages.value,
-        [username]: [...mapped, ...existing]
+        [username]: [...older, ...existing]
       }
     }
 
@@ -4190,6 +4377,177 @@ const refreshSelectedMessages = async () => {
   if (searchContext.value?.active) await exitSearchContext()
   await loadMessages({ username: selectedContact.value.username, reset: true })
 }
+
+const fetchRealtimeStatus = async () => {
+  if (!process.client) return
+  if (!selectedAccount.value) {
+    realtimeAvailable.value = false
+    realtimeStatusInfo.value = null
+    realtimeStatusError.value = ''
+    return
+  }
+
+  const api = useApi()
+  realtimeChecking.value = true
+  try {
+    const resp = await api.getChatRealtimeStatus({ account: selectedAccount.value })
+    realtimeAvailable.value = !!resp?.available
+    realtimeStatusInfo.value = resp?.realtime || null
+    realtimeStatusError.value = ''
+  } catch (e) {
+    realtimeAvailable.value = false
+    realtimeStatusInfo.value = null
+    realtimeStatusError.value = e?.message || '实时状态获取失败'
+  } finally {
+    realtimeChecking.value = false
+  }
+}
+
+const stopRealtimeStream = () => {
+  if (realtimeEventSource) {
+    try {
+      realtimeEventSource.close()
+    } catch {}
+    realtimeEventSource = null
+  }
+}
+
+const refreshRealtimeIncremental = async () => {
+  if (!realtimeEnabled.value) return
+  if (!selectedAccount.value) return
+  if (!selectedContact.value?.username) return
+  if (searchContext.value?.active) return
+  if (isLoadingMessages.value) return
+
+  const username = selectedContact.value.username
+  const existing = allMessages.value[username] || []
+  if (!existing.length) return
+
+  const container = messageContainerRef.value
+  const atBottom = !!container && (container.scrollHeight - container.scrollTop - container.clientHeight) < 80
+
+  const api = useApi()
+  const params = {
+    account: selectedAccount.value,
+    username,
+    limit: 30,
+    offset: 0,
+    order: 'asc',
+  }
+  if (messageTypeFilter.value && messageTypeFilter.value !== 'all') {
+    params.render_types = messageTypeFilter.value
+  }
+
+  await queueRealtimeFullSync(username)
+  const resp = await api.listChatMessages(params)
+  if (selectedContact.value?.username !== username) return
+
+  const raw = resp?.messages || []
+  const latest = raw.map(normalizeMessage)
+  const seenIds = new Set(existing.map((m) => String(m?.id || '')))
+  const newOnes = []
+  for (const m of latest) {
+    const id = String(m?.id || '')
+    if (!id) continue
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+    newOnes.push(m)
+  }
+  if (!newOnes.length) return
+
+  allMessages.value = {
+    ...allMessages.value,
+    [username]: [...existing, ...newOnes]
+  }
+
+  await nextTick()
+  const c = messageContainerRef.value
+  if (c && atBottom) {
+    c.scrollTop = c.scrollHeight
+  }
+  updateJumpToBottomState()
+}
+
+const queueRealtimeRefresh = () => {
+  if (realtimeRefreshFuture) {
+    realtimeRefreshQueued = true
+    return
+  }
+
+  realtimeRefreshFuture = refreshRealtimeIncremental().finally(() => {
+    realtimeRefreshFuture = null
+    if (realtimeRefreshQueued) {
+      realtimeRefreshQueued = false
+      queueRealtimeRefresh()
+    }
+  })
+}
+
+const startRealtimeStream = () => {
+  stopRealtimeStream()
+  if (!process.client || typeof window === 'undefined') return
+  if (!realtimeEnabled.value) return
+  if (!selectedAccount.value) return
+  if (typeof EventSource === 'undefined') return
+
+  const base = 'http://localhost:8000'
+  const url = `${base}/api/chat/realtime/stream?account=${encodeURIComponent(String(selectedAccount.value))}`
+  try {
+    realtimeEventSource = new EventSource(url)
+  } catch (e) {
+    realtimeEventSource = null
+    return
+  }
+
+  realtimeEventSource.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(String(ev.data || '{}'))
+      if (String(data?.type || '') === 'change') {
+        queueRealtimeFullSync(selectedContact.value?.username || '')
+        queueRealtimeRefresh()
+        queueRealtimeSessionsRefresh()
+      }
+    } catch {}
+  }
+
+  realtimeEventSource.onerror = () => {
+    stopRealtimeStream()
+  }
+}
+
+const toggleRealtime = async () => {
+  if (!process.client || typeof window === 'undefined') return
+  if (!selectedAccount.value) return
+
+  if (!realtimeEnabled.value) {
+    await fetchRealtimeStatus()
+    if (!realtimeAvailable.value) {
+      window.alert(realtimeStatusError.value || '实时模式不可用：缺少密钥或 db_storage 路径。')
+      return
+    }
+    realtimeEnabled.value = true
+    startRealtimeStream()
+    queueRealtimeSessionsRefresh()
+    if (selectedContact.value?.username) {
+      await refreshSelectedMessages()
+    }
+    return
+  }
+
+  realtimeEnabled.value = false
+  stopRealtimeStream()
+  await refreshSessionsForSelectedAccount({ sourceOverride: '' })
+  if (selectedContact.value?.username) {
+    await refreshSelectedMessages()
+  }
+}
+
+watch(selectedAccount, async () => {
+  await fetchRealtimeStatus()
+  if (realtimeEnabled.value) {
+    startRealtimeStream()
+  }
+})
 
 watch(messageTypeFilter, async (next, prev) => {
   if (String(next || '') === String(prev || '')) return

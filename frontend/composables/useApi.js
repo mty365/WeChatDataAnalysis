@@ -69,6 +69,7 @@ export const useApi = () => {
     if (params && params.limit != null) query.set('limit', String(params.limit))
     if (params && params.include_hidden != null) query.set('include_hidden', String(!!params.include_hidden))
     if (params && params.include_official != null) query.set('include_official', String(!!params.include_official))
+    if (params && params.source) query.set('source', params.source)
     const url = '/chat/sessions' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
   }
@@ -81,8 +82,37 @@ export const useApi = () => {
     if (params && params.offset != null) query.set('offset', String(params.offset))
     if (params && params.order) query.set('order', params.order)
     if (params && params.render_types) query.set('render_types', params.render_types)
+    if (params && params.source) query.set('source', params.source)
     const url = '/chat/messages' + (query.toString() ? `?${query.toString()}` : '')
     return await request(url)
+  }
+
+  const getChatRealtimeStatus = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    const url = '/chat/realtime/status' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url)
+  }
+
+  const syncChatRealtimeMessages = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.username) query.set('username', params.username)
+    if (params && params.max_scan != null) query.set('max_scan', String(params.max_scan))
+    const url = '/chat/realtime/sync' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url, { method: 'POST' })
+  }
+
+  const syncChatRealtimeAll = async (params = {}) => {
+    const query = new URLSearchParams()
+    if (params && params.account) query.set('account', params.account)
+    if (params && params.max_scan != null) query.set('max_scan', String(params.max_scan))
+    if (params && params.priority_username) query.set('priority_username', params.priority_username)
+    if (params && params.priority_max_scan != null) query.set('priority_max_scan', String(params.priority_max_scan))
+    if (params && params.include_hidden != null) query.set('include_hidden', String(!!params.include_hidden))
+    if (params && params.include_official != null) query.set('include_official', String(!!params.include_official))
+    const url = '/chat/realtime/sync_all' + (query.toString() ? `?${query.toString()}` : '')
+    return await request(url, { method: 'POST' })
   }
 
   const searchChatMessages = async (params = {}) => {
@@ -250,6 +280,9 @@ export const useApi = () => {
     listChatAccounts,
     listChatSessions,
     listChatMessages,
+    getChatRealtimeStatus,
+    syncChatRealtimeMessages,
+    syncChatRealtimeAll,
     searchChatMessages,
     getChatSearchIndexStatus,
     buildChatSearchIndex,
