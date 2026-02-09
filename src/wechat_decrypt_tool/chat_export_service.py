@@ -28,6 +28,7 @@ from .chat_helpers import (
     _load_contact_rows,
     _lookup_resource_md5,
     _parse_app_message,
+    _parse_system_message_content,
     _parse_pat_message,
     _pick_display_name,
     _quote_ident,
@@ -954,13 +955,7 @@ def _parse_message_for_export(
 
     if local_type == 10000:
         render_type = "system"
-        if "revokemsg" in raw_text:
-            content_text = "撤回了一条消息"
-        else:
-            import re as _re
-
-            content_text = _re.sub(r"</?[_a-zA-Z0-9]+[^>]*>", "", raw_text)
-            content_text = _re.sub(r"\\s+", " ", content_text).strip() or "[系统消息]"
+        content_text = _parse_system_message_content(raw_text)
     elif local_type == 49:
         parsed = _parse_app_message(raw_text)
         render_type = str(parsed.get("renderType") or "text")
